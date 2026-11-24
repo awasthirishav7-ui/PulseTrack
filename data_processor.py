@@ -1,138 +1,184 @@
 
-# ==========================================
-# PULSETRACK - DATA PROCESSOR
-# ==========================================
-
 import pandas as pd
 import numpy as np
 
-from heart_rate_engine import (
-    calculate_max_heart_rate,
-    calculate_zone_boundaries,
-    classify_heart_rate
-)
 
+def load_heart_rate_data(uploaded_file):
 
-def load_heart_rate_data(file):
     """
-    Load heart rate data from CSV.
-    """
+    Load and clean heart rate data.
 
-    df = pd.read_csv(file)
-
-    required_columns = ["Timestamp", "Heart_Rate"]
-
-    for column in required_columns:
-        if column not in df.columns:
-            raise ValueError(f"Missing required column: {column}")
-
-    df["Timestamp"] = pd.to_datetime(
-        df["Timestamp"], errors="coerce"
-    )
-
-    df["Heart_Rate"] = pd.to_numeric(
-        df["Heart_Rate"], errors="coerce"
-    )
-
-    # Remove missing values
-    df = df.dropna(subset=["Timestamp", "Heart_Rate"])
-
-    # Remove unrealistic heart rate readings
-    df = df[
-        df["Heart_Rate"].between(30, 220)
-    ]
-
-    # Sort readings by time
-    df = df.sort_values("Timestamp")
-
-    # Remove duplicate timestamps
-    df = df.drop_duplicates(subset=["Timestamp"])
-
-    df = df.reset_index(drop=True)
-
-    if df.empty:
-        raise ValueError("No valid heart rate data found.")
-
-    return df
-
-
-def analyze_heart_rate(df, age):
-    """
-    Calculate heart rate statistics and zones.
+    Supports:
+    1. Timestamp + Heart_Rate CSV files
+    2. Duration + Pulse + Maxpulse + Calories CSV files
     """
 
-    heart_rates = df["Heart_Rate"].to_numpy()
+    try:
 
-    max_hr = calculate_max_heart_rate(age)
+        # Read uploaded CSV file
+        df = pd.read_csv(uploaded_file)
 
-    zone_limits = calculate_zone_boundaries(max_hr)
+        # Clean column names
+        df.columns = df.columns.str.strip()
 
-    # NumPy calculations
-    average_hr = np.mean(heart_rates)
-    minimum_hr = np.min(heart_rates)
-    maximum_hr = np.max(heart_rates)
-    standard_deviation = np.std(heart_rates)
+        # Make column matching case-insensitive
+        column_map = {
+            col.lower(): col for col in df.columns
+        }
 
-    # Assign zones
-    df = df.copy()
+        # Support Pulse as an alternative to Heart_Rate
+        if "heart_rate" not in column_map:
 
-    df["Zone"] = df["Heart_Rate"].apply(
-        lambda hr: classify_heart_rate(hr, zone_limits)
-    )
+            if "pulse" in column_map:
+                df.rename(
+                    columns={column_map["pulse"]: "Heart_Rate"},
+                    inplace=True
+                )
+            else:
+                raise ValueError(
+                    "Missing required column: Heart_Rate or Pulse"
+                )
 
-    # Calculate time intervals between readings
-    time_difference = df["Timestamp"].diff().dt.total_seconds()
+        else:
+            df.rename(
+                columns={column_map["heart_rate"]: "Heart_Rate"},
+                inplace=True
+            )
 
-    # Use median interval for the first and last readings
-    interval = time_difference.median()
+        # Check whether Timestamp exists
+        column_map = {
+            col.lower(): col for col in df.columns
+        }
 
-    if pd.isna(interval) or interval <= 0:
-        interval = 60
+        timestamp_generated = False
 
-    df["Duration_Seconds"] = time_difference.fillna(interval)
+        if "timestamp" not in column_map:
 
-    # Avoid counting huge gaps as continuous exercise
-    df["Duration_Seconds"] = df["Duration_Seconds"].clip(
-        lower=0, upper=interval * 2
-    )
+            # Generate sample timestamps for datasets
+            # that contain no actual timestamp.
+            df["Timestamp"] = pd.date_range(
+                start="2026-01-01 08:00:00",
+                periods=len(df),
+                freq="min"
+            )
 
-    # Time spent in each zone
-    zone_time = df.groupby("Zone")["Duration_Seconds"].sum()
+            timestamp_generated = True
 
-    # Ensure all zones appear in results
-    all_zones = [
-        "Zone 1",
-        "Zone 2",
-        "Zone 3",
-        "Zone 4",
-        "Zone 5"
-    ]
+        else:
 
-    zone_time = zone_time.reindex(
-        all_zones, fill_value=0
-    )
+            df.rename(
+                columns={column_map["timestamp"]: "Timestamp"},
+                inplace=True
+            )
 
-    total_seconds = zone_time.sum()
-
-    if total_seconds > 0:
-        zone_percentage = (
-            zone_time / total_seconds * 100
+        # Convert heart rate into numeric values
+        df["Heart_Rate"] = pd.to_numeric(
+            df["Heart_Rate"],
+            errors="coerce"
         )
-    else:
-        zone_percentage = zone_time * 0
 
-    statistics = {
-        "Average HR": round(average_hr, 2),
-        "Minimum HR": int(minimum_hr),
-        "Maximum HR": int(maximum_hr),
-        "Estimated Max HR": max_hr,
-        "Standard Deviation": round(standard_deviation, 2),
-        "Total Duration (Minutes)": round(
-            total_seconds / 60, 2
+        # Convert timestamp into datetime format
+        df["Timestamp"] = pd.to_datetime(
+            df["Timestamp"],
+            errors="coerce"
+        )
+
+        # Remove rows with missing required values
+        df.dropna(
+            subset=["Timestamp", "Heart_Rate"],
+            inplace=True
+        )
+
+        # Keep valid heart rate values
+        df = df[
+            (df["Heart_Rate"] >= 30) &
+            (df["Heart_Rate"] <= 220)
+        ]
+
+        # Remove duplicate timestamps
+        df.drop_duplicates(
+            subset=["Timestamp"],
+            keep="first",
+            inplace=True
+        )
+
+        # Sort data by timestamp
+        df.sort_values(
+            by="Timestamp",
+            inplace=True
+        )
+
+        # Reset row numbering
+        df.reset_index(
+            drop=True,
+            inplace=True
+        )
+
+        # Stop if no valid data remains
+        if df.empty:
+            raise ValueError(
+                "No valid heart rate data found in this CSV file."
+            )
+
+        # Keep track of generated timestamps
+        df.attrs["timestamp_generated"] = timestamp_generated
+
+        # Return cleaned dataset
+        return df
+
+    except pd.errors.EmptyDataError:
+        raise ValueError("The uploaded CSV file is empty.")
+
+    except pd.errors.ParserError:
+        raise ValueError("Unable to read this CSV file. Check its format.")
+
+    except Exception as e:
+        raise ValueError(str(e))
+
+
+def calculate_heart_rate_statistics(df):
+
+    """
+    Calculate basic heart rate statistics.
+    """
+
+    return {
+        "Average Heart Rate": round(
+            df["Heart_Rate"].mean(), 2
         ),
-        "Zone Time": zone_time,
-        "Zone Percentage": zone_percentage,
-        "Zone Limits": zone_limits
+
+        "Maximum Heart Rate": int(
+            df["Heart_Rate"].max()
+        ),
+
+        "Minimum Heart Rate": int(
+            df["Heart_Rate"].min()
+        ),
+
+        "Standard Deviation": round(
+            df["Heart_Rate"].std(), 2
+        )
     }
 
-    return df, statistics
+
+def get_heart_rate_summary(df):
+
+    """
+    Return a simple heart rate summary.
+    """
+
+    return {
+        "Total Readings": len(df),
+
+        "Average Heart Rate": round(
+            df["Heart_Rate"].mean(), 2
+        ),
+
+        "Maximum Heart Rate": int(
+            df["Heart_Rate"].max()
+        ),
+
+        "Minimum Heart Rate": int(
+            df["Heart_Rate"].min()
+        )
+    }
